@@ -1,7 +1,212 @@
-# This file should contain all the record creation needed to seed the database with its default values.
-# The data can then be loaded with the rake db:seed (or created alongside the db with db:setup).
-#
-# Examples:
-#   
-#   cities = City.create([{ :name => 'Chicago' }, { :name => 'Copenhagen' }])
-#   Major.create(:name => 'Daley', :city => cities.first)
+require 'morph'
+require 'yaml'
+
+# WikiPage.destroy_all
+
+module Morph
+  class Item
+    include Morph
+    
+    def title_or_organisation
+      title.blank? ? (organisation.blank? ? contractor : organisation) : title
+    end
+
+    def path
+      unless @path
+        title = title_or_organisation.gsub("\t",' ').gsub("\r",' ').gsub("\n",' ').squeeze(' ').strip
+        slug = FriendlyId::SlugString.new(title)
+        normalized = slug.normalize!
+        normalized = slug.approximate_ascii! unless slug.approximate_ascii!.blank?
+        path = normalized[0..60]
+        @path = "#{contract_no}-#{path}"
+      end
+      @path
+    end
+    
+    def country_or_region_path
+      @country_or_region_path ||= create_path(country_or_region.blank? ? 'no country' : country_or_region)
+    end
+
+    def contractor_path
+      @contractor_path ||= create_path(contractor)
+    end
+
+    def organisation_path
+      @organisation_path ||= create_path(organisation)
+    end
+    
+    private
+    def create_path name
+      path = name.gsub("\t",' ').gsub("\r",' ').gsub("\n",' ').squeeze(' ').strip
+      slug = FriendlyId::SlugString.new(path)
+      normalized = slug.normalize!
+      normalized = slug.approximate_ascii! unless slug.approximate_ascii!.blank?
+      normalized
+    end
+  end
+end
+
+def projects_list items, type
+  items = items.sort_by(&:title_or_organisation)
+  titles = items.collect {|i| "* [[#{i.title_or_organisation}]] €#{number_with_delimiter(i.amount_in_euro)}"}
+  projects = titles.compact.join("\n")
+  projects_list = "\n\nh2. #{type}Projects\n\n#{projects}"
+  if items.size > 1
+    total_amount = items.collect {|i| i.amount_in_euro}.compact.map {|a| a.to_i}.sum
+    projects_list += "\nTotal amount: €#{number_with_delimiter total_amount}"
+  end
+  projects_list
+end
+
+def projects_list items, type
+  items = items.sort_by(&:title_or_organisation)
+  titles = items.collect {|i| "* [[#{i.title_or_organisation}]] €#{number_with_delimiter(i.amount_in_euro)}"}
+  projects = titles.compact.join("\n")
+  projects_list = "\n\nh2. #{type}Projects\n\n#{projects}"
+  if items.size > 1
+    total_amount = items.collect {|i| i.amount_in_euro}.compact.map {|a| a.to_i}.sum
+    projects_list += "\nTotal amount: €#{number_with_delimiter total_amount}"
+  end
+  projects_list
+end
+
+def create_page path, title, items, type=nil
+  puts path
+  page = WikiPage.find_or_create_by_path(path)
+  page.title = title
+  content = projects_list items, type
+  if page.content
+    unless page.content.include?(content)
+      page.content += content
+      page.save
+    end
+  else
+    page.content = content
+    page.save
+  end
+end
+
+include ActionView::Helpers::NumberHelper
+
+def load_item item, codes
+  puts item.path
+  page = WikiPage.find_or_create_by_path(item.path)
+  page.title = item.title
+  links = [:country_or_region, :organisation, :contractor, :organisation_nationality, :contractor_nationality]
+  lines = []
+  
+  item.class.morph_attributes.each do |key|
+    value = item.send(key)
+    value = value.gsub("\t",' ').gsub("\r",' ').gsub("\n",' ').squeeze(' ').strip unless value.blank?
+    label = key.to_s.gsub('_',' ').capitalize
+    if links.include?(key)
+      if value && value.include?('Target groups')
+        parts = value.split('Target groups')
+        lines << "*#{label}* [[#{parts[0]}]] Target groups#{parts[1]}"
+      elsif !value.blank?
+        lines << "*#{label}* [[#{value}]]"
+      end
+    elsif key == :title
+      # ignore
+    elsif key.to_s[/in_euro/]
+      lines << "*#{label}* €#{number_with_delimiter value}"
+    elsif key == :dac_code && codes.has_key?(value)
+      lines << "*DAC code* [[#{value} #{codes[value].first.description}]]"
+    else
+      lines << "*#{label}* #{value}"
+    end
+  end
+  content = lines.join("\n")
+  page.content = content
+  page.save
+end
+
+def add_index name, names, &block
+  page = WikiPage.find_or_create_by_path(name.strip.gsub(' ','-').downcase)
+  page.title = name
+  content = names.compact.sort.map {|c| "* [[#{c.strip}]]"}.join("\n")
+  content = yield content if block
+  page.content = content
+  page.save
+end
+
+def add_countries items, file
+  country_or_regions = []
+  items.group_by(&:country_or_region_path).each do |path, items|
+    country_or_region = items.first.country_or_region
+    create_page(path, country_or_region, items, "#{file[/procurement|grant/].capitalize} ")
+    country_or_regions << country_or_region
+  end
+  add_index 'Countries and Regions', country_or_regions
+end
+
+def load_file file, codes, &block
+  csv = IO.read("#{RAILS_ROOT}/data/#{file}")
+  items = Morph.from_csv(csv, 'Item')
+  # add_countries items, file
+  yield items, codes
+  # items.each { |item| load_item(item, codes) }
+end
+
+def load_dac_codes
+  csv = IO.read("#{RAILS_ROOT}/data/dac_codes.csv")
+  codes = Morph.from_csv(csv, 'Code')
+  codes.each do |code|
+    path = code.code
+    page = WikiPage.find_or_create_by_path(path)
+    page.title = "#{code.code} #{code.description}"
+    page.content = (code.notes || '')
+    page.save
+  end
+  code_names = codes.collect{|c| "#{c.code.size < 5 ? "#{c.code}00" : c.code} #{c.description}"}
+  add_index('DAC Codes', code_names) {|content| content.gsub("00 ",' ')}
+  codes.group_by(&:code)
+end
+
+def add_to_dac_codes codes, items, type
+  items.group_by(&:dac_code).each do |dac_code, items|
+    puts dac_code
+    if codes.has_key?(dac_code)
+      code = codes[dac_code].first
+      path = code.code
+      puts "adding #{items.size} to #{code.code}"
+      create_page(path, "#{code.code} #{code.description}", items, type)
+    end
+  end
+end
+
+codes = load_dac_codes
+
+load_file('ec_beneficiaries_grants.csv', codes) do |items, codes|
+  type = 'Grant '
+  add_to_dac_codes codes, items, type
+end
+load_file('ec_beneficiaries_procurement.csv', codes) do |items, codes|
+  type = 'Procurement '
+  add_to_dac_codes codes, items, type
+end
+=begin
+load_file('ec_beneficiaries_grants.csv', codes) do |items, codes|
+  type = 'Grant '
+  add_to_dac_codes codes, items, type
+  organisations = []
+  items.group_by(&:organisation_path).each do |path, items|
+    organisation = items.first.organisation
+    create_page(path, organisation, items, type)
+    organisations << organisation
+  end
+  add_index 'Organisations', organisations
+end
+
+load_file('ec_beneficiaries_procurement.csv', codes) do |items, codes|
+  type = 'Procurement '
+  add_to_dac_codes codes, items, type
+  contractors = []
+  items.group_by(&:contractor_path).each do |path, items|
+    contractor = items.first.contractor
+    create_page(path, contractor, items, type)
+    contractors << contractor
+  end
+  add_index 'Contractors', contractors
+end
+=end
