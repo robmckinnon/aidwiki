@@ -1,5 +1,4 @@
 bin
-data/*.csv
 iui
 db/development.sqlite3
 .bundle
