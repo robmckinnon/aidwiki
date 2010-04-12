@@ -8,7 +8,7 @@ module Morph
     include Morph
     
     def title_or_organisation
-      title.blank? ? (organisation.blank? ? contractor : organisation) : title
+      title.blank? ? (organisation.blank? ? contractor.strip : organisation.strip) : title.strip
     end
 
     def path
@@ -46,35 +46,74 @@ module Morph
   end
 end
 
-def projects_list items, type
-  items = items.sort_by(&:title_or_organisation)
-  titles = items.collect {|i| "* [[#{i.title_or_organisation}]] €#{number_with_delimiter(i.amount_in_euro)}"}
-  projects = titles.compact.join("\n")
-  projects_list = "\n\nh2. #{type}Projects\n\n#{projects}"
-  if items.size > 1
-    total_amount = items.collect {|i| i.amount_in_euro}.compact.map {|a| a.to_i}.sum
-    projects_list += "\nTotal amount: €#{number_with_delimiter total_amount}"
-  end
-  projects_list
+def as_euro amount
+  number_to_currency(amount, :unit => "€", :precision => 0)
 end
 
 def projects_list items, type
   items = items.sort_by(&:title_or_organisation)
-  titles = items.collect {|i| "* [[#{i.title_or_organisation}]] €#{number_with_delimiter(i.amount_in_euro)}"}
+  titles = items.collect {|i| "* [[#{i.title_or_organisation}]] #{as_euro(i.amount_in_euro)}"}
   projects = titles.compact.join("\n")
   projects_list = "\n\nh2. #{type}Projects\n\n#{projects}"
   if items.size > 1
     total_amount = items.collect {|i| i.amount_in_euro}.compact.map {|a| a.to_i}.sum
-    projects_list += "\nTotal amount: €#{number_with_delimiter total_amount}"
+    projects_list += "\n\n*Total amount: #{as_euro(total_amount)}*"
   end
   projects_list
 end
 
-def create_page path, title, items, type=nil
+def projects_by_country all_items, type
+  projects_list = "\n\nh2. #{type}Projects\n"
+  by_country = all_items.group_by(&:country_or_region)
+  by_country.each do |country, items|
+    items = items.sort_by(&:title_or_organisation)
+    titles = items.collect {|i| "* [[#{i.title_or_organisation}]] #{as_euro(i.amount_in_euro)}"}
+    projects = titles.compact.join("\n")
+    projects_list += "\n\nh3. #{country}\n\n#{projects}"
+    if items.size > 1
+      total_amount = items.collect {|i| i.amount_in_euro}.compact.map {|a| a.to_i}.sum
+      projects_list += "\n* *Total amount: #{as_euro total_amount}*"
+    end
+  end
+  if all_items.size > 1
+    total_amount = all_items.collect {|i| i.amount_in_euro}.compact.map {|a| a.to_i}.sum
+    projects_list += "\n\n*Total #{type.downcase}projects amount: #{as_euro total_amount}*"
+  end
+  projects_list
+end
+
+def projects_by_dac_code codes, all_items, type
+  projects_list = "\n\nh2. #{type}Projects\n"
+  by_code = all_items.group_by(&:dac_code)
+  by_code.each do |dac_code, items|
+    items = items.sort_by(&:title_or_organisation)
+    titles = items.collect {|i| "* [[#{i.title_or_organisation}]] #{as_euro(i.amount_in_euro)}"}
+    projects = titles.compact.join("\n")
+    
+    if codes.has_key?(dac_code)
+      projects_list += "\n\nh3. #{dac_code} #{codes[dac_code].first.description}\n\n#{projects}"
+    else
+      projects_list += "\n\nh3. #{dac_code}\n\n#{projects}"
+    end
+
+    if items.size > 1
+      total_amount = items.collect {|i| i.amount_in_euro}.compact.map {|a| a.to_i}.sum
+      projects_list += "\n* *Total amount: #{as_euro total_amount}*"
+    end
+  end
+  if all_items.size > 1
+    total_amount = all_items.collect {|i| i.amount_in_euro}.compact.map {|a| a.to_i}.sum
+    projects_list += "\n\n*Total #{type.downcase}projects amount: #{as_euro total_amount}*"
+  end
+  projects_list
+end
+
+
+def create_page path, title, items, type=nil, by_country=true
   puts path
   page = WikiPage.find_or_create_by_path(path)
   page.title = title
-  content = projects_list items, type
+  content = by_country ? projects_by_country(items, type) : projects_list(items, type)
   if page.content
     unless page.content.include?(content)
       page.content += content
@@ -88,12 +127,12 @@ end
 
 include ActionView::Helpers::NumberHelper
 
-def load_item item, codes
+def load_item item, codes, type
   puts item.path
   page = WikiPage.find_or_create_by_path(item.path)
   page.title = item.title
   links = [:country_or_region, :organisation, :contractor, :organisation_nationality, :contractor_nationality]
-  lines = []
+  lines = ["h2. #{type}Project\n\n"]
   
   item.class.morph_attributes.each do |key|
     value = item.send(key)
@@ -106,10 +145,16 @@ def load_item item, codes
       elsif !value.blank?
         lines << "*#{label}* [[#{value}]]"
       end
+    elsif key == :duration_unit
+      line = lines.pop
+      line = line + value
+      lines << line
+    elsif key == :ec_financing
+      lines << "*EC financing* #{number_to_percentage(value, :precision => 1)}" unless value.blank?
     elsif key == :title
       # ignore
     elsif key.to_s[/in_euro/]
-      lines << "*#{label}* €#{number_with_delimiter value}"
+      lines << "*#{label}* #{as_euro value}" unless value.blank?
     elsif key == :dac_code && codes.has_key?(value)
       lines << "*DAC code* [[#{value} #{codes[value].first.description}]]"
     else
@@ -134,18 +179,18 @@ def add_countries items, file
   country_or_regions = []
   items.group_by(&:country_or_region_path).each do |path, items|
     country_or_region = items.first.country_or_region
-    create_page(path, country_or_region, items, "#{file[/procurement|grant/].capitalize} ")
+    create_page(path, country_or_region, items, "#{file[/procurement|grant/].capitalize} ", false)
     country_or_regions << country_or_region
   end
   add_index 'Countries and Regions', country_or_regions
 end
 
-def load_file file, codes, &block
+def load_file file, codes, type, &block
   csv = IO.read("#{RAILS_ROOT}/data/#{file}")
   items = Morph.from_csv(csv, 'Item')
   # add_countries items, file
-  yield items, codes
-  # items.each { |item| load_item(item, codes) }
+  yield items, codes, type
+  items.each { |item| load_item(item, codes, type) }
 end
 
 def load_dac_codes
@@ -177,15 +222,13 @@ end
 
 codes = load_dac_codes
 
-load_file('ec_beneficiaries_grants.csv', codes) do |items, codes|
-  type = 'Grant '
+load_file('ec_beneficiaries_grants.csv', codes, 'Grant ') do |items, codes, type|
   add_to_dac_codes codes, items, type
 end
-load_file('ec_beneficiaries_procurement.csv', codes) do |items, codes|
-  type = 'Procurement '
+load_file('ec_beneficiaries_procurement.csv', codes, 'Procurement ') do |items, codes, type|
   add_to_dac_codes codes, items, type
 end
-=begin
+
 load_file('ec_beneficiaries_grants.csv', codes) do |items, codes|
   type = 'Grant '
   add_to_dac_codes codes, items, type
@@ -209,4 +252,4 @@ load_file('ec_beneficiaries_procurement.csv', codes) do |items, codes|
   end
   add_index 'Contractors', contractors
 end
-=end
+
