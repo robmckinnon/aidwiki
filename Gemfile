@@ -10,3 +10,5 @@ gem 'irwi'
 gem 'RedCloth'
 gem 'friendly_id'
 gem 'morph'
+gem 'activerecord-postgresql-adapter'
+
