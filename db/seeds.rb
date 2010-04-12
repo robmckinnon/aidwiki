@@ -222,15 +222,16 @@ end
 
 codes = load_dac_codes
 
+=begin
 load_file('ec_beneficiaries_grants.csv', codes, 'Grant ') do |items, codes, type|
   add_to_dac_codes codes, items, type
 end
 load_file('ec_beneficiaries_procurement.csv', codes, 'Procurement ') do |items, codes, type|
   add_to_dac_codes codes, items, type
 end
+=end
 
-load_file('ec_beneficiaries_grants.csv', codes) do |items, codes|
-  type = 'Grant '
+load_file('ec_beneficiaries_grants.csv', codes, 'Grant ') do |items, codes, type|
   add_to_dac_codes codes, items, type
   organisations = []
   items.group_by(&:organisation_path).each do |path, items|
@@ -241,8 +242,7 @@ load_file('ec_beneficiaries_grants.csv', codes) do |items, codes|
   add_index 'Organisations', organisations
 end
 
-load_file('ec_beneficiaries_procurement.csv', codes) do |items, codes|
-  type = 'Procurement '
+load_file('ec_beneficiaries_procurement.csv', codes, 'Procurement ') do |items, codes, type|
   add_to_dac_codes codes, items, type
   contractors = []
   items.group_by(&:contractor_path).each do |path, items|
