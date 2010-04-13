@@ -188,7 +188,7 @@ end
 def load_file file, codes, type, &block
   csv = IO.read("#{RAILS_ROOT}/data/#{file}")
   items = Morph.from_csv(csv, 'Item')
-  # add_countries items, file
+  add_countries items, file
   yield items, codes, type
   items.each { |item| load_item(item, codes, type) }
 end
